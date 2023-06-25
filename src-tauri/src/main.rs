@@ -6,20 +6,17 @@ use discord_rich_presence::{
     DiscordIpc, DiscordIpcClient,
 };
 use std::{
-    sync::Mutex,
+    sync::{Mutex, mpsc::{channel, Receiver, Sender}, self},
     thread::{self, JoinHandle},
     time::Duration, fmt::format,
 };
 use tauri::State;
 
+static mut sender: Option<Sender<DiscordState>> = None;
 
-// [IMPORTANT]
-// ADDING <'a> to this MIGHT FIX stuff
-// No idea how lifetimes work, if the next idea doesn't work come back to this
-// [IMPORTANT]
 struct DiscordState<'a> {
     discord_activity: Mutex<ActivityData<'a>>,
-    handle: Mutex<JoinHandle<()>>,
+    handle: JoinHandle<()>,
 }
 
 // Implement serde::Serialize (maybe Deserialize) so i can pass it directly from javascript
@@ -38,29 +35,36 @@ fn update_status(stateMsg: &str, detailsMsg: &str, mut state: State<DiscordState
         state_msg: stateMsg,
         details: detailsMsg,
     };
+    state.handle.thread().unpark();
 
-    // *state.discord_activity.lock().unwrap() = data.clone();
-    // let activity_mutex = state.discord_activity.lock().unwrap();
 
     return format!("no fucking idea");
 }
 
 fn main() {
-    let handle = thread::spawn(|| {discord_init()});
+
+    let (tx,rx) = channel();
+    unsafe {
+        sender = Some(tx);
+    }
+    let discord_handle = thread::spawn(|| {discord_init(rx)});
     tauri::Builder::default()
-        .manage(DiscordState {
-            discord_activity: ActivityData {
-                state_msg: "",
-                details: "",
-            }
-            .into(),
+        .manage(
+            DiscordState {
+                discord_activity: ActivityData {
+                    state_msg: "",
+                    details: "",
+                }
+                .into(),
+                handle: discord_handle,
         })
         .invoke_handler(tauri::generate_handler![update_status])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-fn discord_init(){
+fn discord_init(rx: Receiver<ActivityData>){
+
     let mut client = DiscordIpcClient::new("1122014998231781407").unwrap();
 
     client.connect().unwrap();
@@ -88,11 +92,13 @@ fn discord_init(){
         .assets(assets);
 
     client.set_activity(activity).unwrap();
-    thread::park();
+    
     // have a loop that parks the thread, then when it is externally unparked, modify activity, set_activity then park again
+    
+    loop {
+        thread::park();
+        let send_data = rx.recv().unwrap();
+        // Do something with the data.
 
-    // loop {
-
-    // }
-    client.clear_activity().unwrap();
+    }
 }
