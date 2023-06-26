@@ -5,7 +5,7 @@ use discord_rich_presence::{
     activity::{self, Activity, Assets, Button, Timestamps, Party},
     DiscordIpc, DiscordIpcClient,
 };
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::{
     fmt::format,
     sync::{
@@ -19,7 +19,6 @@ use std::{
 use tauri::State;
 
 
-
 static mut SENDER: Option<Sender<ActivityData>> = None;
 
 struct DiscordState {
@@ -27,25 +26,31 @@ struct DiscordState {
     handle: JoinHandle<()>,
 }
 
-#[derive(Clone,Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Image{
     image_id:String,
     image_label:String,
 }
 
+#[derive(Clone, Serialize, Deserialize, Default)]
+struct ButtonData {
+    url:String,
+    label:String,
+}
+
 // Implement serde::Serialize (maybe Deserialize) so i can pass it directly from javascript
 // Although that might only apply to data passed to js, i want to pass data from js
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ActivityData {
     kill_app: bool,
     state: String,
     details: String,
-    timestamps: Option<Timestamps>,
+    timestamps: Option<(i64, i64)>,
     party: Option<(String, i32)>,
     large_image: Image,
     small_image: Image,
-    button_one: Option<(String, String)>, // Just using a tuple for now i cant be bothered
-    button_two: Option<(String, String)>,
+    button_one: Option<ButtonData>, // Just using a tuple for now i cant be bothered
+    button_two: Option<ButtonData>,
     // not doing secrets right now, cba
     // secrets: 
 
@@ -72,14 +77,14 @@ impl ActivityData {
 
 
 #[tauri::command]
-fn update_status(stateMsg: &str, detailsMsg: &str, mut state: State<DiscordState>) -> String {
-    let mut data = ActivityData::new();
-    data.state = stateMsg.to_string();
-    data.details = detailsMsg.to_string();
-
+fn update_status(activity: ActivityData, mut state: State<DiscordState>) -> String {
+    // let mut data = ActivityData::new();
+    // data.state = stateMsg.to_string();
+    // data.details = detailsMsg.to_string();
+    // print!("{}",activity.);
     state.handle.thread().unpark();
     unsafe {
-        SENDER.clone().unwrap().send(data).unwrap();
+        SENDER.clone().unwrap().send(activity).unwrap();
     }
 
     return format!("no fucking idea");
@@ -141,8 +146,8 @@ fn discord_init(rx: Receiver<ActivityData>) {
         .small_text("Huh?");
 
     let activity = activity::Activity::new()
-        .state("Multi threading will be the end of me")
-        .details("just testing some stuff please")
+        .state("are my speciality")
+        .details("skeuomorphic bastardisations")
         .buttons(buttons)
         .assets(assets);
 
@@ -153,23 +158,54 @@ fn discord_init(rx: Receiver<ActivityData>) {
     loop {
         thread::park();
 
-        let send_data = rx.recv().unwrap();
+        let sent_data: ActivityData = rx.recv().unwrap();
 
-        if send_data.kill_app {
+        if sent_data.kill_app {
             client.clear_activity().unwrap();
             client.close().unwrap();
             break;
         }
 
-        let assets = Assets::new().large_image("sadge2").large_text("test");
+        let new_assets = Assets::new()
+            .large_image(&sent_data.large_image.image_id)
+            .large_text(&sent_data.large_image.image_label)
+            .small_image(&sent_data.small_image.image_id)
+            .small_text(&sent_data.small_image.image_label);
 
-        let new_activity = activity
-            .clone()
-            .details(&send_data.details)
-            .state(&send_data.state)
-            .assets(assets);
+        let mut new_activity = Activity::new()
+            .details(&sent_data.details)
+            .state(&sent_data.state)
+            .assets(new_assets)
+            ;
 
-        // let new_activity = new_activity.buttons(vec![]);
+        
+        let mut button_one_local: ButtonData = ButtonData::default();
+        let mut button_two_local: ButtonData = ButtonData::default();
+    
+        if sent_data.button_one.is_some() || sent_data.button_two.is_some() {
+            let mut buttons: Vec<Button> = vec![];
+            if let Some(btn) = sent_data.button_one {
+                button_one_local = btn;
+                buttons.push(
+                    Button::new(
+                        &button_one_local.label,
+                        &button_one_local.url
+                    )
+                );
+            }
+            if let Some(btn) = sent_data.button_two {
+                button_two_local = btn;
+                buttons.push(
+                    Button::new(
+                        &button_two_local.label,
+                        &button_two_local.url
+                    )
+                );
+            }
+            new_activity = new_activity.buttons(buttons);
+        }
+        
+
 
         client.set_activity(new_activity).unwrap();
     }
