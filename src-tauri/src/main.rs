@@ -179,8 +179,8 @@ fn discord_init(rx: Receiver<ActivityData>) {
             ;
 
         
-        let mut button_one_local: ButtonData = ButtonData::default();
-        let mut button_two_local: ButtonData = ButtonData::default();
+        let button_one_local: ButtonData;
+        let button_two_local: ButtonData;
     
         if sent_data.button_one.is_some() || sent_data.button_two.is_some() {
             let mut buttons: Vec<Button> = vec![];
