@@ -12,31 +12,31 @@ use std::{
 };
 use tauri::State;
 
-static mut sender: Option<Sender<DiscordState>> = None;
+static mut sender: Option<Sender<ActivityData>> = None;
 
-struct DiscordState<'a> {
-    discord_activity: Mutex<ActivityData<'a>>,
+struct DiscordState {
+    discord_activity: Mutex<ActivityData>,
     handle: JoinHandle<()>,
 }
 
 // Implement serde::Serialize (maybe Deserialize) so i can pass it directly from javascript
 // Although that might only apply to data passed to js, i wan't to pass data from js
 #[derive(Clone)]
-struct ActivityData<'a> {
-    state_msg: &'a str,
-    details: &'a str,
+struct ActivityData {
+    state_msg: String,
+    details: String,
 }
 
 #[tauri::command]
 fn update_status(stateMsg: &str, detailsMsg: &str, mut state: State<DiscordState>) -> String {
-    // as i can "unpark" the thread from here, it might be better to park the thread instead of a loop and then when a change needs to be made, unpark it
-    // make the change and then park again.
     let mut data = ActivityData {
-        state_msg: stateMsg,
-        details: detailsMsg,
+        state_msg: stateMsg.to_string(),
+        details: detailsMsg.to_string(),
     };
     state.handle.thread().unpark();
-
+    unsafe{
+        sender.clone().unwrap().send(data).unwrap();
+    }
 
     return format!("no fucking idea");
 }
@@ -44,16 +44,18 @@ fn update_status(stateMsg: &str, detailsMsg: &str, mut state: State<DiscordState
 fn main() {
 
     let (tx,rx) = channel();
+
     unsafe {
         sender = Some(tx);
     }
+
     let discord_handle = thread::spawn(|| {discord_init(rx)});
     tauri::Builder::default()
         .manage(
             DiscordState {
                 discord_activity: ActivityData {
-                    state_msg: "",
-                    details: "",
+                    state_msg: String::new(),
+                    details: String::new(),
                 }
                 .into(),
                 handle: discord_handle,
@@ -91,13 +93,21 @@ fn discord_init(rx: Receiver<ActivityData>){
         .buttons(buttons)
         .assets(assets);
 
-    client.set_activity(activity).unwrap();
+    client.set_activity(activity.clone()).unwrap();
     
     // have a loop that parks the thread, then when it is externally unparked, modify activity, set_activity then park again
     
     loop {
         thread::park();
         let send_data = rx.recv().unwrap();
+
+        let new_activity = activity.clone()
+        .details(&send_data.details)
+        .state(&send_data.state_msg)
+        ;
+
+
+        client.set_activity(new_activity).unwrap();
         // Do something with the data.
 
     }
