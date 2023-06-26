@@ -6,84 +6,66 @@ use discord_rich_presence::{
     DiscordIpc, DiscordIpcClient,
 };
 use std::{
-    sync::Mutex,
+    sync::{Mutex, mpsc::{channel, Receiver, Sender}, self},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::Duration, fmt::format,
 };
 use tauri::State;
-// mod discordrp;
 
-struct Connection {
-    connected: bool,
-    handle: Option<JoinHandle<()>>,
-}
+static mut sender: Option<Sender<ActivityData>> = None;
 
 struct DiscordState {
-    connection: Mutex<Connection>,
-    discord_activity: Mutex<ActivityData<'static>>,
+    discord_activity: Mutex<ActivityData>,
+    handle: JoinHandle<()>,
 }
 
 // Implement serde::Serialize (maybe Deserialize) so i can pass it directly from javascript
-// Although that might only apply to data passed to js, i wan't to pass data from js 
+// Although that might only apply to data passed to js, i wan't to pass data from js
 #[derive(Clone)]
-struct ActivityData<'a> {
-    state_msg: &'a str,
-    details: &'a str,
+struct ActivityData {
+    state_msg: String,
+    details: String,
 }
-
 
 #[tauri::command]
 fn update_status(stateMsg: &str, detailsMsg: &str, mut state: State<DiscordState>) -> String {
-    // as i can "unpark" the thread from here, it might be better to park the thread instead of a loop and then when a change needs to be made, unpark it
-    // make the change and then park again.
     let mut data = ActivityData {
-        state_msg: stateMsg,
-        details: detailsMsg,
+        state_msg: stateMsg.to_string(),
+        details: detailsMsg.to_string(),
     };
-
-    // *state.discord_activity.lock().unwrap() = data.clone();
-    // let activity_mutex = state.discord_activity.lock().unwrap();
-
-    let mut con = state.connection.lock().unwrap();
-
-    if !con.connected {
-        let handle = discord_init(&mut data); // Might be able to remove clone just cba right now
-
-        con.handle = Some(handle);
-        con.connected = true;
-
-        return format!("New Connection");
-    } else {
-        // con.handle.as_ref().unwrap().thread().unpark();
-
-        // if con.handle.as_ref().unwrap().is_finished() {
-        //     con.connected = false;
-        // }
-        return format!("Already connected");
+    state.handle.thread().unpark();
+    unsafe{
+        sender.clone().unwrap().send(data).unwrap();
     }
+
+    return format!("no fucking idea");
 }
 
 fn main() {
-    tauri::Builder::default()
-        .manage(DiscordState {
-            discord_activity: ActivityData {
-                state_msg: "",
-                details: "",
-            }
-            .into(),
 
-            connection: Connection {
-                connected: false,
-                handle: None,
-            }
-            .into(),
+    let (tx,rx) = channel();
+
+    unsafe {
+        sender = Some(tx);
+    }
+
+    let discord_handle = thread::spawn(|| {discord_init(rx)});
+    tauri::Builder::default()
+        .manage(
+            DiscordState {
+                discord_activity: ActivityData {
+                    state_msg: String::new(),
+                    details: String::new(),
+                }
+                .into(),
+                handle: discord_handle,
         })
         .invoke_handler(tauri::generate_handler![update_status])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-fn discord_init(update_data: &mut ActivityData) -> thread::JoinHandle<()> {
+fn discord_init(rx: Receiver<ActivityData>){
 
     let mut client = DiscordIpcClient::new("1122014998231781407").unwrap();
 
@@ -106,19 +88,27 @@ fn discord_init(update_data: &mut ActivityData) -> thread::JoinHandle<()> {
         .small_text("Huh?");
 
     let activity = activity::Activity::new()
-        .state(&update_data.state_msg) // I know this is changed before being displayed, it was just to test the ability to change things after
+        .state("Multi threading will be the end of me") // I know this is changed before being displayed, it was just to test the ability to change things after
         .details("just testing some stuff please")
         .buttons(buttons)
         .assets(assets);
 
-    return thread::spawn(move || {
-        client.set_activity(activity).unwrap();
+    client.set_activity(activity.clone()).unwrap();
+    
+    // have a loop that parks the thread, then when it is externally unparked, modify activity, set_activity then park again
+    
+    loop {
         thread::park();
-        // have a loop that parks the thread, then when it is externally unparked, modify activity, set_activity then park again
+        let send_data = rx.recv().unwrap();
 
-        // loop {
+        let new_activity = activity.clone()
+        .details(&send_data.details)
+        .state(&send_data.state_msg)
+        ;
 
-        // }
-        client.clear_activity().unwrap();
-    });
+
+        client.set_activity(new_activity).unwrap();
+        // Do something with the data.
+
+    }
 }
